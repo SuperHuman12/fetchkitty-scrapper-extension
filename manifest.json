@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Fetch Kitty Scrapper",
+  "version": "1.0",
+  "description": "Extracts data from URLs in different tabs using tab api in chrome.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-script.js"]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["extract-images.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
