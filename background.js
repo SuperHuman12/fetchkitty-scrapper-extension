@@ -40,73 +40,92 @@ function extractContentWithReadability() {
     if (article) {
       const parser = new DOMParser();
       const doc = parser.parseFromString(article.content, 'text/html');
-      let inlineImages = [];
+      let allImages = new Set();
 
-      // Process images
-      doc.querySelectorAll('img').forEach(img => {
-        const imgSrc = img.src || img.getAttribute('data-src') || '';
-        if (imgSrc) {
-          inlineImages.push(imgSrc);
-          img.src = imgSrc; // Ensure the src attribute is set
+      // Function to extract image URLs from a string (for inline styles, CSS rules, etc.)
+      function extractImageUrls(str) {
+        const urls = [];
+        const regex = /url\s*\(\s*(?:"|')?([^"')]+\.(?:png|jpg|jpeg|gif|webp|svg))(?:"|')?\s*\)/gi;
+        let match;
+        while ((match = regex.exec(str)) !== null) {
+          urls.push(match[1]);
         }
-      });
+        return urls;
+      }
 
-      // Process links
-      doc.querySelectorAll('a').forEach(a => {
-        const href = a.getAttribute('href');
-        if (href) {
-          a.setAttribute('target', '_blank'); // Open links in new tab
-          a.setAttribute('rel', 'noopener noreferrer'); // Security best practice
-        }
-      });
-
-      // Preserve tables
-      doc.querySelectorAll('table').forEach(table => {
-        table.border = '1';
-        table.style.borderCollapse = 'collapse';
-        table.querySelectorAll('th, td').forEach(cell => {
-          cell.style.border = '1px solid black';
-          cell.style.padding = '5px';
-        });
-      });
-
-      const processedContent = doc.body.innerHTML;
-
-      // Extract additional images from CSS and other places
-      const additionalImages = [];
-
-      // Check inline styles
-      document.querySelectorAll('*[style]').forEach(el => {
-        const style = el.getAttribute('style');
-        const match = style.match(/url\(['"]?(.*?)['"]?\)/);
-        if (match) additionalImages.push(match[1]);
-      });
-
-      // Check CSS rules
-      for (let i = 0; i < document.styleSheets.length; i++) {
+      // Function to add an image URL to allImages, resolving it to an absolute URL
+      function addImage(url) {
         try {
-          const rules = document.styleSheets[i].cssRules;
-          for (let j = 0; j < rules.length; j++) {
-            const rule = rules[j];
-            if (rule.style && rule.style.backgroundImage) {
-              const match = rule.style.backgroundImage.match(/url\(['"]?(.*?)['"]?\)/);
-              if (match) additionalImages.push(match[1]);
-            }
-          }
+          const absoluteUrl = new URL(url, document.baseURI).href;
+          allImages.add(absoluteUrl);
         } catch (e) {
-          console.warn('Unable to access stylesheet', e);
+          console.warn('Invalid URL:', url);
         }
       }
 
+      // Extract images from the whole document, not just the parsed article
+      function extractImagesFromDocument(root) {
+        // Process all elements for inline styles and attributes
+        root.querySelectorAll('*').forEach(el => {
+          // Check inline style
+          if (el.style && el.style.cssText) {
+            extractImageUrls(el.style.cssText).forEach(addImage);
+          }
+
+          // Check background-image attribute
+          const bgImage = el.getAttribute('background-image');
+          if (bgImage) addImage(bgImage);
+
+          // Check src and data-src attributes
+          ['src', 'data-src'].forEach(attr => {
+            const value = el.getAttribute(attr);
+            if (value && value.match(/\.(png|jpg|jpeg|gif|webp|svg)/i)) addImage(value);
+          });
+
+          // Special handling for <img> tags
+          if (el.tagName === 'IMG') {
+            ['src', 'data-src', 'srcset'].forEach(attr => {
+              const value = el.getAttribute(attr);
+              if (value) {
+                value.split(',').forEach(src => {
+                  const imgSrc = src.trim().split(' ')[0];
+                  if (imgSrc.match(/\.(png|jpg|jpeg|gif|webp|svg)/i)) addImage(imgSrc);
+                });
+              }
+            });
+          }
+        });
+
+        // Process all stylesheets
+        Array.from(document.styleSheets).forEach(sheet => {
+          try {
+            Array.from(sheet.cssRules || sheet.rules || []).forEach(rule => {
+              if (rule.style && rule.style.cssText) {
+                extractImageUrls(rule.style.cssText).forEach(addImage);
+              }
+            });
+          } catch (e) {
+            console.warn('Unable to access stylesheet', e);
+          }
+        });
+      }
+
+      // Extract images from both the original document and the parsed article
+      extractImagesFromDocument(document);
+      extractImagesFromDocument(doc);
+
+      // Convert Set to Array
+      const extractedImages = Array.from(allImages);
+
       return {
         title: article.title,
-        content: processedContent,
+        content: article.content,
         url: window.location.href,
         excerpt: article.excerpt,
         byline: article.byline,
         dir: article.dir,
-        inlineImages: inlineImages,
-        extractedImages: additionalImages
+        length: article.length,
+        extractedImages: extractedImages
       };
     } else {
       throw new Error('Readability.js couldn\'t parse the content');

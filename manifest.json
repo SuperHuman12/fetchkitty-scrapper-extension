@@ -1,8 +1,22 @@
 {
   "manifest_version": 3,
-  "name": "Fetch Kitty Scrapper",
-  "version": "1.0",
-  "description": "Extracts data from URLs in different tabs using tab api in chrome.",
+  "name": "Fetch Kitty AI Scrapper",
+  "version": "1.0.0",
+  "description": "AI-powered tool that extracts, understands, and cleans web content using AI for efficient content curation. Just Purrrfect !",
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "Fetch Kitty AI Scrapper"
+  },
   "permissions": [
     "activeTab",
     "scripting",

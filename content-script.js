@@ -1,85 +1,90 @@
-console.log("Content script loaded");
+console.log("Content script loaded for Fetch Kitty Scrapper");
 
-function filterImages(content) {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(content, 'text/html');
-  let filteredImages = [];
+let extensionActive = true;
 
-  doc.querySelectorAll('img').forEach(img => {
-    const rect = img.getBoundingClientRect();
-    if (rect.width >= 100 && rect.height >= 100 && isVisible(img)) {
-      filteredImages.push(img.src);
-    } else {
-      img.parentNode.removeChild(img);
+function sendMessageToExtension(message) {
+  return new Promise((resolve, reject) => {
+    if (!extensionActive) {
+      reject(new Error("Extension is not active"));
+      return;
+    }
+
+    try {
+      chrome.runtime.sendMessage(message, response => {
+        if (chrome.runtime.lastError) {
+          console.error('Chrome runtime error:', chrome.runtime.lastError);
+          extensionActive = false;
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve(response);
+        }
+      });
+    } catch (error) {
+      console.error('Error sending message to extension:', error);
+      extensionActive = false;
+      reject(error);
     }
   });
-
-  // Process links
-  doc.querySelectorAll('a').forEach(a => {
-    const href = a.getAttribute('href');
-    if (href) {
-      a.setAttribute('target', '_blank');
-      a.setAttribute('rel', 'noopener noreferrer');
-    }
-  });
-
-  // Preserve tables
-  doc.querySelectorAll('table').forEach(table => {
-    table.border = '1';
-    table.style.borderCollapse = 'collapse';
-    table.querySelectorAll('th, td').forEach(cell => {
-      cell.style.border = '1px solid black';
-      cell.style.padding = '5px';
-    });
-  });
-
-  return {
-    content: doc.body.innerHTML,
-    filteredImages: filteredImages
-  };
 }
 
-function isVisible(el) {
-  return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-}
-
-window.addEventListener('message', (event) => {
+window.addEventListener('message', async (event) => {
   if (event.source !== window) return;
 
   if (event.data.type === 'CHECK_EXTENSION_STATUS') {
-    window.postMessage({ type: 'EXTENSION_STATUS', status: true }, '*');
+    window.postMessage({ type: 'EXTENSION_STATUS', status: extensionActive }, '*');
   } else if (event.data.type === 'EXTRACT_DATA') {
-    chrome.runtime.sendMessage({ action: 'extractData', url: event.data.url }, (response) => {
-      if (response.error) {
-        console.error('Extraction error:', response.error);
-        window.postMessage({ 
-          type: 'EXTRACTION_ERROR', 
-          error: response.error,
-          details: response.details || 'No additional details available'
-        }, '*');
-      } else {
-        console.log('Received extracted data in content script:', response);
-        
-        // Filter images
-        const filteredData = filterImages(response.content);
-        
-        window.postMessage({ 
-          type: 'EXTRACTED_DATA', 
-          url: event.data.url, 
-          data: {
-            title: response.title,
-            content: filteredData.content,
-            url: response.url,
-            excerpt: response.excerpt,
-            byline: response.byline,
-            direction: response.dir,
-            extractedImages: filteredData.filteredImages.concat(response.extractedImages || [])
-          }
-        }, '*');
-      }
-    });
+    if (!extensionActive) {
+      window.postMessage({ 
+        type: 'EXTRACTION_ERROR', 
+        error: 'Extension is not active',
+        details: 'The extension context may have been invalidated. Please refresh the page.'
+      }, '*');
+      return;
+    }
+
+    try {
+      const response = await sendMessageToExtension({ 
+        action: 'extractData', 
+        url: event.data.url 
+      });
+
+      window.postMessage({ 
+        type: 'EXTRACTED_DATA', 
+        url: event.data.url, 
+        data: {
+          title: response.title,
+          content: response.content,
+          url: response.url,
+          excerpt: response.excerpt,
+          byline: response.byline,
+          direction: response.dir,
+          extractedImages: response.extractedImages
+        }
+      }, '*');
+    } catch (error) {
+      window.postMessage({ 
+        type: 'EXTRACTION_ERROR', 
+        error: error.message,
+        details: 'An error occurred while extracting data. Please try again.'
+      }, '*');
+    }
   }
 });
+
+// Check extension status periodically
+function checkExtensionStatus() {
+  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {
+    extensionActive = true;
+    window.postMessage({ type: 'EXTENSION_STATUS', status: true }, '*');
+  } else {
+    extensionActive = false;
+    window.postMessage({ type: 'EXTENSION_STATUS', status: false }, '*');
+  }
+}
+
+// Check status immediately and then every 5 seconds
+checkExtensionStatus();
+setInterval(checkExtensionStatus, 5000);
 
 // Notify the web app that the extension is ready
 window.postMessage({ type: 'EXTENSION_STATUS', status: true }, '*');
