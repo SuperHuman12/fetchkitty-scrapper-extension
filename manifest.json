@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Fetch Kitty AI Scrapper",
-  "version": "1.0.0",
+  "name": "Fetch Kitty AI Scraper",
+  "version": "1.0.1",
   "description": "AI-powered tool that extracts, understands, and cleans web content using AI for efficient content curation. Just Purrrfect !",
 
   "icons": {

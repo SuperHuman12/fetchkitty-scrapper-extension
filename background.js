@@ -29,103 +29,240 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
       });
     });
-    return true; // Indicates an async response
+    return true;
   }
 });
 
 function extractContentWithReadability() {
   try {
+    // Process original document first to get all CTAs and links
+    let allImages = new Set();
+    let allLinks = [];
+
+    // Before processing, remove all SVGs that are used for UI purposes
+    function isUiSvg(svg) {
+      if (!svg) return false;
+      const rect = svg.getBoundingClientRect();
+      
+      // Small SVGs in navigation or buttons are likely UI elements
+      if (rect.width <= 24 && rect.height <= 24) return true;
+      if (svg.closest('nav, button, [role="button"], .btn, header')) return true;
+
+      // Check for common UI patterns in paths
+      const paths = svg.querySelectorAll('path');
+      for (const path of paths) {
+        const d = path.getAttribute('d');
+        if (d && (d.includes('L6.5 7.125') || d.includes('M1.25 1.875'))) return true;
+      }
+
+      // Check for typical UI-related attributes
+      if (svg.parentElement && (
+        svg.parentElement.className.toLowerCase().includes('icon') ||
+        svg.parentElement.className.toLowerCase().includes('button') ||
+        svg.parentElement.className.toLowerCase().includes('dropdown')
+      )) return true;
+
+      return false;
+    }
+
+    // First pass: Remove UI SVGs
+    document.querySelectorAll('svg').forEach(svg => {
+      if (isUiSvg(svg)) {
+        svg.remove();
+      }
+    });
+
+    // Process all potential CTAs and links in the full document
+    document.querySelectorAll('a, button, [role="button"], .btn, .button, .cta, [class*="apply"], [id*="apply"], [class*="action"], [id*="action"], [class*="cta"], [id*="cta"]').forEach(element => {
+      try {
+        let url = '';
+        let text = element.textContent.trim();
+        
+        // Get URL from href or onclick or data attributes
+        if (element.tagName === 'A') {
+          url = element.getAttribute('href');
+        } else if (element.onclick) {
+          const onclickStr = element.onclick.toString();
+          const urlMatch = onclickStr.match(/window\.location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/);
+          if (urlMatch) url = urlMatch[1];
+        } else {
+          // Check data-attributes for URLs
+          for (let attr of element.attributes) {
+            if (attr.name.startsWith('data-') && attr.value.includes('http')) {
+              url = attr.value;
+              break;
+            }
+          }
+        }
+
+        if (url && !url.startsWith('javascript:') && !url.startsWith('#')) {
+          try {
+            const absoluteUrl = new URL(url, document.baseURI).href;
+            const rect = element.getBoundingClientRect();
+            
+            const linkData = {
+              url: absoluteUrl,
+              text: text,
+              type: 'link',
+              isButton: false,
+              position: {
+                top: rect.top,
+                left: rect.left,
+                bottom: rect.bottom,
+                right: rect.right
+              },
+              classes: element.getAttribute('class') || '',
+              id: element.getAttribute('id') || '',
+              attributes: {}
+            };
+
+            // Gather all attributes
+            Array.from(element.attributes).forEach(attr => {
+              linkData.attributes[attr.name] = attr.value;
+            });
+
+            // Check if it's a CTA/button using multiple criteria
+            if (
+              element.matches('button') ||
+              element.matches('a.button') ||
+              element.className.toLowerCase().includes('btn') ||
+              element.className.toLowerCase().includes('button') ||
+              element.className.toLowerCase().includes('cta') ||
+              element.className.toLowerCase().includes('apply') ||
+              element.getAttribute('role') === 'button' ||
+              element.id.toLowerCase().includes('cta') ||
+              element.id.toLowerCase().includes('apply') ||
+              text.toLowerCase().includes('apply') ||
+              text.toLowerCase().includes('submit') ||
+              text.toLowerCase().includes('get started') ||
+              getComputedStyle(element).backgroundColor !== 'rgba(0, 0, 0, 0)' ||
+              getComputedStyle(element).border !== 'none'
+            ) {
+              linkData.isButton = true;
+              linkData.type = 'cta';
+            }
+
+            // Determine location in page
+            if (rect.top < window.innerHeight * 0.2) {
+              linkData.location = 'header';
+            } else if (rect.bottom > document.documentElement.clientHeight * 0.8) {
+              linkData.location = 'footer';
+            } else {
+              linkData.location = 'content';
+            }
+
+            allLinks.push(linkData);
+          } catch (e) {
+            console.warn('Error processing URL:', url);
+          }
+        }
+      } catch (e) {
+        console.warn('Error processing element:', e);
+      }
+    });
+
+    // Now process with Readability
     const documentClone = document.cloneNode(true);
+    
+    // Remove UI SVGs from the clone before processing
+    documentClone.querySelectorAll('svg').forEach(svg => {
+      if (isUiSvg(svg)) {
+        svg.remove();
+      }
+    });
+    
     const article = new Readability(documentClone).parse();
+    
     if (article) {
       const parser = new DOMParser();
       const doc = parser.parseFromString(article.content, 'text/html');
-      let allImages = new Set();
 
-      // Function to extract image URLs from a string (for inline styles, CSS rules, etc.)
-      function extractImageUrls(str) {
-        const urls = [];
-        const regex = /url\s*\(\s*(?:"|')?([^"')]+\.(?:png|jpg|jpeg|gif|webp|svg))(?:"|')?\s*\)/gi;
-        let match;
-        while ((match = regex.exec(str)) !== null) {
-          urls.push(match[1]);
-        }
-        return urls;
-      }
-
-      // Function to add an image URL to allImages, resolving it to an absolute URL
+      // Function to add image URL
       function addImage(url) {
         try {
-          const absoluteUrl = new URL(url, document.baseURI).href;
-          allImages.add(absoluteUrl);
+          if (url) {
+            const absoluteUrl = new URL(url, document.baseURI).href;
+            if (!absoluteUrl.startsWith('data:') &&
+                !absoluteUrl.includes('tracking') &&
+                !absoluteUrl.includes('analytics') &&
+                !absoluteUrl.match(/\.(js|css|json|xml)($|\?)/i)) {
+              allImages.add(absoluteUrl);
+            }
+          }
         } catch (e) {
           console.warn('Invalid URL:', url);
         }
       }
 
-      // Extract images from the whole document, not just the parsed article
-      function extractImagesFromDocument(root) {
-        // Process all elements for inline styles and attributes
-        root.querySelectorAll('*').forEach(el => {
-          // Check inline style
-          if (el.style && el.style.cssText) {
-            extractImageUrls(el.style.cssText).forEach(addImage);
+      // Process all images from both document and article
+      [document, doc].forEach(root => {
+        // Process all images
+        root.querySelectorAll('img').forEach(img => {
+          const src = img.getAttribute('src');
+          if (src) addImage(src);
+
+          const srcset = img.getAttribute('srcset');
+          if (srcset) {
+            srcset.split(',').forEach(src => {
+              const imgSrc = src.trim().split(' ')[0];
+              addImage(imgSrc);
+            });
           }
 
-          // Check background-image attribute
-          const bgImage = el.getAttribute('background-image');
-          if (bgImage) addImage(bgImage);
-
-          // Check src and data-src attributes
-          ['src', 'data-src'].forEach(attr => {
-            const value = el.getAttribute(attr);
-            if (value && value.match(/\.(png|jpg|jpeg|gif|webp|svg)/i)) addImage(value);
+          // Handle data attributes
+          ['data-src', 'data-original', 'data-lazy', 'data-srcset'].forEach(attr => {
+            const value = img.getAttribute(attr);
+            if (value) addImage(value);
           });
-
-          // Special handling for <img> tags
-          if (el.tagName === 'IMG') {
-            ['src', 'data-src', 'srcset'].forEach(attr => {
-              const value = el.getAttribute(attr);
-              if (value) {
-                value.split(',').forEach(src => {
-                  const imgSrc = src.trim().split(' ')[0];
-                  if (imgSrc.match(/\.(png|jpg|jpeg|gif|webp|svg)/i)) addImage(imgSrc);
-                });
-              }
-            });
-          }
         });
 
-        // Process all stylesheets
-        Array.from(document.styleSheets).forEach(sheet => {
-          try {
-            Array.from(sheet.cssRules || sheet.rules || []).forEach(rule => {
-              if (rule.style && rule.style.cssText) {
-                extractImageUrls(rule.style.cssText).forEach(addImage);
-              }
-            });
-          } catch (e) {
-            console.warn('Unable to access stylesheet', e);
+        // Process background images
+        root.querySelectorAll('*[style*="background"]').forEach(el => {
+          const style = el.getAttribute('style');
+          if (style) {
+            const matches = style.match(/url\(['"]?([^'"]+)['"]?\)/g);
+            if (matches) {
+              matches.forEach(match => {
+                const url = match.replace(/url\(['"]?([^'"]+)['"]?\)/i, '$1');
+                addImage(url);
+              });
+            }
           }
         });
-      }
+      });
 
-      // Extract images from both the original document and the parsed article
-      extractImagesFromDocument(document);
-      extractImagesFromDocument(doc);
+      // Filter and clean up
+      const uniqueLinks = allLinks.filter((link, index, self) => 
+        index === self.findIndex((t) => t.url === link.url)
+      );
 
-      // Convert Set to Array
-      const extractedImages = Array.from(allImages);
+      const extractedImages = Array.from(allImages).filter(url => {
+        try {
+          return url && !url.includes('undefined') && !url.includes('null');
+        } catch (e) {
+          return false;
+        }
+      });
 
+      // Remove SVGs from the content before returning
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = article.content;
+      tempDiv.querySelectorAll('svg').forEach(svg => {
+        if (isUiSvg(svg)) {
+          svg.remove();
+        }
+      });
+      
       return {
         title: article.title,
-        content: article.content,
+        content: tempDiv.innerHTML,
         url: window.location.href,
         excerpt: article.excerpt,
         byline: article.byline,
         dir: article.dir,
         length: article.length,
-        extractedImages: extractedImages
+        extractedImages: extractedImages,
+        links: uniqueLinks
       };
     } else {
       throw new Error('Readability.js couldn\'t parse the content');
